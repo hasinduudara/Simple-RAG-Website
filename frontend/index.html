@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic RAG PDF Assistant</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            width: 100%;
+            max-width: 550px;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            padding: 25px;
+        }
+        h2 {
+            text-align: center;
+            color: #1a73e8;
+            margin-top: 0;
+        }
+        .section {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px dashed #cbd5e1;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #334155;
+        }
+        .file-input-group {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="file"] {
+            flex: 1;
+        }
+        .response-box {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #1a73e8;
+            border-radius: 4px;
+            min-height: 60px;
+            color: #333;
+            line-height: 1.5;
+        }
+        .loading {
+            color: #1a73e8;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .status-msg {
+            font-size: 14px;
+            margin-top: 8px;
+            font-weight: bold;
+        }
+        .input-group {
+            display: flex;
+            margin-top: 15px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px 0 0 6px;
+            outline: none;
+            font-size: 15px;
+        }
+        button {
+            padding: 12px 20px;
+            border: none;
+            background: #1a73e8;
+            color: white;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .input-group button {
+            border-radius: 0 6px 6px 0;
+        }
+        button:hover {
+            background: #1557b0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Smart PDF Assistant 🤖</h2>
+        
+        <!-- Step 1: Upload Section -->
+        <div class="section">
+            <div class="section-title">1. Upload PDF Document</div>
+            <div class="file-input-group">
+                <input type="file" id="pdfFileInput" accept=".pdf" />
+                <button onclick="uploadPDF()">Upload</button>
+            </div>
+            <div class="status-msg" id="uploadStatus"></div>
+        </div>
+
+        <!-- Step 2: Question & Answer Section -->
+        <div class="section">
+            <div class="section-title">2. Ask Questions</div>
+            <div class="response-box" id="responseBox">
+                Upload a PDF file above and ask any question!
+            </div>
+            <div class="loading" id="loadingText">Processing... ⏳</div>
+            
+            <div class="input-group">
+                <input type="text" id="questionInput" placeholder="Ask a question..." onkeypress="handleKeyPress(event)" />
+                <button onclick="askQuestion()">Ask</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Upload PDF Function
+        async function uploadPDF() {
+            const fileInput = document.getElementById("pdfFileInput");
+            const uploadStatus = document.getElementById("uploadStatus");
+
+            if (!fileInput.files || fileInput.files.length === 0) {
+                alert("Please select a PDF file first!");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            uploadStatus.style.color = "#1a73e8";
+            uploadStatus.innerText = "Extracting & Embedding PDF... Please wait ⏳";
+
+            try {
+                const response = await fetch("http://127.0.0.1:8000/upload", {
+                    method: "POST",
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    uploadStatus.style.color = "green";
+                    uploadStatus.innerText = "✅ " + data.message;
+                } else {
+                    uploadStatus.style.color = "red";
+                    uploadStatus.innerText = "❌ " + (data.detail || "Upload failed.");
+                }
+            } catch (error) {
+                uploadStatus.style.color = "red";
+                uploadStatus.innerText = "❌ Could not connect to the Backend API.";
+                console.error("Upload error:", error);
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === "Enter") {
+                askQuestion();
+            }
+        }
+
+        // Ask Question Function
+        async function askQuestion() {
+            const questionInput = document.getElementById("questionInput");
+            const question = questionInput.value.trim();
+            const responseBox = document.getElementById("responseBox");
+            const loadingText = document.getElementById("loadingText");
+
+            if (!question) return;
+
+            responseBox.innerText = "";
+            loadingText.style.display = "block";
+            
+            try {
+                const response = await fetch("http://127.0.0.1:8000/ask", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+
+                const data = await response.json();
+                
+                loadingText.style.display = "none";
+                responseBox.innerText = data.answer || "No response received.";
+                questionInput.value = "";
+                
+            } catch (error) {
+                loadingText.style.display = "none";
+                responseBox.innerText = "Error connecting to the server.";
+                console.error("Error:", error);
+            }
+        }
+    </script>
+
+</body>
+</html>
