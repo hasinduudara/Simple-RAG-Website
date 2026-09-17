@@ -146,12 +146,14 @@ def generate_answer(query, context):
 
 
 @app.get("/")
+@app.get("/api")
 def read_root():
     return {"message": "RAG API is running!"}
 
 
 # Endpoint 1: Upload PDF, process text, embed chunks, and update Qdrant
 @app.post("/upload")
+@app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(
@@ -210,6 +212,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 # Endpoint 2: Ask question based on current indexed PDF
 @app.post("/ask")
+@app.post("/api/ask")
 def ask_question(request: QueryRequest):
     user_query = request.question
     qdrant = get_qdrant_client()
