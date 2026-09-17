@@ -1,6 +1,7 @@
 import io
 import os
 import requests
+import time
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ load_dotenv()
 HF_API_KEY = os.getenv("HF_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+MAX_UPLOAD_CHUNKS = int(os.getenv("MAX_UPLOAD_CHUNKS", "20"))
 
 # HuggingFace Models configuration
 EMBEDDING_MODEL_ID = "BAAI/bge-small-en-v1.5"
@@ -62,7 +64,20 @@ def require_settings():
 
 def get_qdrant_client():
     require_settings()
-    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    return QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+        prefer_grpc=False,
+        timeout=30,
+    )
+
+
+def service_error(service, action, error):
+    print(f"{service} {action} Error: {error}")
+    raise HTTPException(
+        status_code=502,
+        detail=f"{service} {action} failed. Please try again. Details: {error}",
+    )
 
 
 # Helper Function: Extract text directly from uploaded PDF bytes
@@ -78,14 +93,15 @@ def extract_text_from_pdf_bytes(pdf_bytes):
 
 
 # Helper Function: Split text into smaller chunks
-def chunk_text(text, chunk_size=300, overlap=50):
+def chunk_text(text, chunk_size=800, overlap=100, max_chunks=MAX_UPLOAD_CHUNKS):
     chunks = []
     start = 0
     text_length = len(text)
-    while start < text_length:
+    while start < text_length and len(chunks) < max_chunks:
         end = start + chunk_size
         chunk = text[start:end]
-        chunks.append(chunk.strip())
+        if chunk.strip():
+            chunks.append(chunk.strip())
         start += chunk_size - overlap
     return chunks
 
@@ -94,22 +110,34 @@ def chunk_text(text, chunk_size=300, overlap=50):
 def get_embedding(text):
     require_settings()
     payload = {"inputs": text, "options": {"wait_for_model": True}}
-    try:
-        response = requests.post(
-            EMBEDDING_API_URL, headers=headers, json=payload, timeout=20
-        )
-        response.raise_for_status()
-        res_json = response.json()
-        if (
-            isinstance(res_json, list)
-            and len(res_json) > 0
-            and isinstance(res_json[0], list)
-        ):
-            return res_json[0]
-        return res_json
-    except Exception as e:
-        print(f"Embedding Error: {e}")
-        return None
+    last_error = None
+
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                EMBEDDING_API_URL, headers=headers, json=payload, timeout=30
+            )
+            response.raise_for_status()
+            res_json = response.json()
+            if (
+                isinstance(res_json, list)
+                and len(res_json) > 0
+                and isinstance(res_json[0], list)
+            ):
+                vector = res_json[0]
+            else:
+                vector = res_json
+
+            if isinstance(vector, list) and len(vector) == 384:
+                return vector
+
+            raise ValueError(f"Unexpected embedding response shape: {res_json}")
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(1 + attempt)
+
+    service_error("Hugging Face", "embedding request", last_error)
 
 
 # Helper Function: Generate answer using LLM
@@ -173,17 +201,20 @@ async def upload_pdf(file: UploadFile = File(...)):
                 detail="Could not extract readable text from this PDF.",
             )
 
-        # Chunk extracted text
-        chunks = chunk_text(extracted_text, chunk_size=300, overlap=50)
+        # Chunk extracted text. Keep uploads small enough for serverless runtime.
+        chunks = chunk_text(extracted_text)
 
         # Re-create Qdrant collection to replace old document vectors
-        if qdrant.collection_exists(COLLECTION_NAME):
-            qdrant.delete_collection(COLLECTION_NAME)
+        try:
+            if qdrant.collection_exists(COLLECTION_NAME):
+                qdrant.delete_collection(COLLECTION_NAME)
 
-        qdrant.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
+            qdrant.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
+        except Exception as e:
+            service_error("Qdrant", "collection setup", e)
 
         # Generate embeddings and upload points
         points = []
@@ -194,12 +225,21 @@ async def upload_pdf(file: UploadFile = File(...)):
                     PointStruct(id=idx, vector=vector, payload={"text": chunk})
                 )
 
-        if points:
+        if not points:
+            raise HTTPException(
+                status_code=502,
+                detail="Could not generate embeddings for this PDF.",
+            )
+
+        try:
             qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+        except Exception as e:
+            service_error("Qdrant", "vector upload", e)
 
         return {
             "message": f"PDF '{file.filename}' processed and indexed successfully!",
             "total_chunks": len(points),
+            "indexed_characters": len("".join(chunks)),
         }
     except HTTPException:
         raise
@@ -219,20 +259,18 @@ def ask_question(request: QueryRequest):
 
     # 1. Convert question to vector
     query_vector = get_embedding(user_query)
-    if not query_vector:
-        raise HTTPException(
-            status_code=500, detail="Failed to generate query embedding."
-        )
-
     # 2. Search Qdrant
-    if not qdrant.collection_exists(COLLECTION_NAME):
-        return {
-            "answer": "No document indexed yet. Please upload a PDF first!"
-        }
+    try:
+        if not qdrant.collection_exists(COLLECTION_NAME):
+            return {
+                "answer": "No document indexed yet. Please upload a PDF first!"
+            }
 
-    search_results = qdrant.query_points(
-        collection_name=COLLECTION_NAME, query=query_vector, limit=2
-    ).points
+        search_results = qdrant.query_points(
+            collection_name=COLLECTION_NAME, query=query_vector, limit=2
+        ).points
+    except Exception as e:
+        service_error("Qdrant", "search", e)
 
     if not search_results:
         return {"answer": "No relevant information found in the document."}
