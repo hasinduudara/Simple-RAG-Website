@@ -4,6 +4,10 @@ A full-stack Retrieval-Augmented Generation (RAG) web application built with **F
 
 ---
 
+👉 Live - https://simple-rag-website.vercel.app/
+
+---
+
 ## 🛠️ Tech Stack
 
 * **Backend:** FastAPI (Python), Uvicorn, Pydantic, Pypdf
