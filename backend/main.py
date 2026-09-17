@@ -18,7 +18,7 @@ HF_API_KEY = os.getenv("HF_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 MAX_UPLOAD_CHUNKS = int(os.getenv("MAX_UPLOAD_CHUNKS", "20"))
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(3 * 1024 * 1024)))
 
 # HuggingFace Models configuration
 EMBEDDING_MODEL_ID = "BAAI/bge-small-en-v1.5"
@@ -261,10 +261,11 @@ def read_root():
     return {"message": "RAG API is running!"}
 
 
-# Endpoint 1: Upload PDF, process text, embed chunks, and update Qdrant
-@app.post("/upload")
-@app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+# Legacy multipart upload fallback. The frontend uses /api/upload-json because
+# base64 JSON stays predictable under Vercel's request body limit.
+@app.post("/upload", deprecated=True)
+@app.post("/api/upload", deprecated=True)
+async def upload_pdf_multipart(file: UploadFile = File(...)):
     try:
         file_bytes = await file.read()
         return process_pdf_bytes(file.filename, file_bytes)

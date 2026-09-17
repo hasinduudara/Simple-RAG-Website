@@ -141,11 +141,11 @@
             }
 
             const selectedFile = fileInput.files[0];
-            const maxUploadBytes = 4 * 1024 * 1024;
+            const maxUploadBytes = 3 * 1024 * 1024;
 
             if (selectedFile.size > maxUploadBytes) {
                 uploadStatus.style.color = "red";
-                uploadStatus.innerText = "❌ Please upload a PDF smaller than 4 MB.";
+                uploadStatus.innerText = "❌ Please upload a PDF smaller than 3 MB.";
                 return;
             }
 

@@ -17,7 +17,7 @@ A full-stack Retrieval-Augmented Generation (RAG) web application built with **F
 
 ## ⚙️ Architecture & Data Pipeline
 
-1. **Document Ingestion & Chunking:** Uploaded PDFs are parsed directly in memory (`RAM`) using `pypdf`. The extracted text is split into manageable chunks with an overlap to preserve contextual continuity.
+1. **Document Ingestion & Chunking:** Uploaded PDFs are parsed directly in memory (`RAM`) using `pypdf`. The extracted text is split into manageable chunks with an overlap to preserve contextual continuity. The browser uploads PDFs through the JSON `/api/upload-json` endpoint and limits raw PDF files to 3 MB so the base64 request body stays under Vercel's request size limit.
 2. **Embedding Generation:** Each text chunk is sent to the Hugging Face Inference API to generate dense vector representations.
 3. **Vector Storage & Similarity Search:** Vectors and text payloads are indexed in **Qdrant Cloud**. When a query is made, Qdrant performs a cosine similarity search to retrieve the most relevant text chunks.
 4. **Context-Aware Generation:** The retrieved chunks are injected into a prompt template and sent to **Meta Llama 3.1**, which formulates a precise, grounded answer.
