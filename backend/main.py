@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import requests
@@ -17,6 +18,7 @@ HF_API_KEY = os.getenv("HF_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 MAX_UPLOAD_CHUNKS = int(os.getenv("MAX_UPLOAD_CHUNKS", "20"))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
 
 # HuggingFace Models configuration
 EMBEDDING_MODEL_ID = "BAAI/bge-small-en-v1.5"
@@ -43,6 +45,11 @@ COLLECTION_NAME = "pdf_documents"
 # Pydantic Model for Question Request Body
 class QueryRequest(BaseModel):
     question: str
+
+
+class UploadRequest(BaseModel):
+    filename: str
+    file_base64: str
 
 
 def require_settings():
@@ -90,6 +97,81 @@ def extract_text_from_pdf_bytes(pdf_bytes):
         if text:
             extracted_text += text + "\n"
     return extracted_text
+
+
+def validate_pdf_upload(filename, file_bytes):
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400, detail="Please upload a valid PDF file."
+        )
+
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF is too large. Please upload a file smaller than {max_mb:.1f} MB.",
+        )
+
+    if not file_bytes.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=400,
+            detail="The selected file does not look like a valid PDF.",
+        )
+
+
+def process_pdf_bytes(filename, file_bytes):
+    validate_pdf_upload(filename, file_bytes)
+    print(f"Upload Step: received {filename} ({len(file_bytes)} bytes)")
+
+    extracted_text = extract_text_from_pdf_bytes(file_bytes)
+    print(f"Upload Step: extracted {len(extracted_text)} characters")
+
+    if not extracted_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract readable text from this PDF.",
+        )
+
+    chunks = chunk_text(extracted_text)
+    print(f"Upload Step: created {len(chunks)} chunks")
+
+    qdrant = get_qdrant_client()
+
+    try:
+        if qdrant.collection_exists(COLLECTION_NAME):
+            qdrant.delete_collection(COLLECTION_NAME)
+
+        qdrant.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        )
+    except Exception as e:
+        service_error("Qdrant", "collection setup", e)
+
+    points = []
+    for idx, chunk in enumerate(chunks, 1):
+        vector = get_embedding(chunk)
+        if vector:
+            points.append(
+                PointStruct(id=idx, vector=vector, payload={"text": chunk})
+            )
+
+    if not points:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not generate embeddings for this PDF.",
+        )
+
+    try:
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+    except Exception as e:
+        service_error("Qdrant", "vector upload", e)
+
+    return {
+        "message": f"PDF '{filename}' processed and indexed successfully!",
+        "total_chunks": len(points),
+        "indexed_characters": len("".join(chunks)),
+    }
 
 
 # Helper Function: Split text into smaller chunks
@@ -183,68 +265,40 @@ def read_root():
 @app.post("/upload")
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(
-            status_code=400, detail="Please upload a valid PDF file."
-        )
-
     try:
-        qdrant = get_qdrant_client()
-
-        # Read file bytes
         file_bytes = await file.read()
-        extracted_text = extract_text_from_pdf_bytes(file_bytes)
-
-        if not extracted_text.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="Could not extract readable text from this PDF.",
-            )
-
-        # Chunk extracted text. Keep uploads small enough for serverless runtime.
-        chunks = chunk_text(extracted_text)
-
-        # Re-create Qdrant collection to replace old document vectors
-        try:
-            if qdrant.collection_exists(COLLECTION_NAME):
-                qdrant.delete_collection(COLLECTION_NAME)
-
-            qdrant.create_collection(
-                collection_name=COLLECTION_NAME,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-            )
-        except Exception as e:
-            service_error("Qdrant", "collection setup", e)
-
-        # Generate embeddings and upload points
-        points = []
-        for idx, chunk in enumerate(chunks, 1):
-            vector = get_embedding(chunk)
-            if vector:
-                points.append(
-                    PointStruct(id=idx, vector=vector, payload={"text": chunk})
-                )
-
-        if not points:
-            raise HTTPException(
-                status_code=502,
-                detail="Could not generate embeddings for this PDF.",
-            )
-
-        try:
-            qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-        except Exception as e:
-            service_error("Qdrant", "vector upload", e)
-
-        return {
-            "message": f"PDF '{file.filename}' processed and indexed successfully!",
-            "total_chunks": len(points),
-            "indexed_characters": len("".join(chunks)),
-        }
+        return process_pdf_bytes(file.filename, file_bytes)
+    except OSError as e:
+        print(f"Upload stream Error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload stream failed before the PDF could be read: {e}",
+        )
     except HTTPException:
         raise
     except Exception as e:
         print(f"Upload Error: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process PDF: {str(e)}"
+        )
+
+
+@app.post("/upload-json")
+@app.post("/api/upload-json")
+async def upload_pdf_json(request: UploadRequest):
+    try:
+        try:
+            file_bytes = base64.b64decode(request.file_base64, validate=True)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid PDF upload data: {e}"
+            )
+
+        return process_pdf_bytes(request.filename, file_bytes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Upload JSON Error: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to process PDF: {str(e)}"
         )

@@ -140,16 +140,29 @@
                 return;
             }
 
-            const formData = new FormData();
-            formData.append("file", fileInput.files[0]);
+            const selectedFile = fileInput.files[0];
+            const maxUploadBytes = 4 * 1024 * 1024;
+
+            if (selectedFile.size > maxUploadBytes) {
+                uploadStatus.style.color = "red";
+                uploadStatus.innerText = "❌ Please upload a PDF smaller than 4 MB.";
+                return;
+            }
 
             uploadStatus.style.color = "#1a73e8";
             uploadStatus.innerText = "Extracting & Embedding PDF... Please wait ⏳";
 
             try {
-                const response = await fetch("/api/upload", {
+                const fileBase64 = await fileToBase64(selectedFile);
+                const response = await fetch("/api/upload-json", {
                     method: "POST",
-                    body: formData
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        filename: selectedFile.name,
+                        file_base64: fileBase64
+                    })
                 });
 
                 const data = await parseApiResponse(response);
@@ -166,6 +179,18 @@
                 uploadStatus.innerText = "❌ " + error.message;
                 console.error("Upload error:", error);
             }
+        }
+
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const result = reader.result || "";
+                    resolve(String(result).split(",")[1] || "");
+                };
+                reader.onerror = () => reject(reader.error || new Error("Could not read the selected file."));
+                reader.readAsDataURL(file);
+            });
         }
 
         function handleKeyPress(event) {
