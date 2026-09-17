@@ -130,6 +130,16 @@
     </div>
 
     <script>
+        const isLocalFrontend = window.location.protocol === "file:"
+            || ["localhost", "127.0.0.1"].includes(window.location.hostname);
+        const API_BASE_URL = isLocalFrontend
+            ? "http://127.0.0.1:8000"
+            : "";
+
+        function apiUrl(path) {
+            return `${API_BASE_URL}${path}`;
+        }
+
         // Upload PDF Function
         async function uploadPDF() {
             const fileInput = document.getElementById("pdfFileInput");
@@ -154,7 +164,7 @@
 
             try {
                 const fileBase64 = await fileToBase64(selectedFile);
-                const response = await fetch("/api/upload-json", {
+                const response = await fetch(apiUrl("/api/upload-json"), {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json"
@@ -212,7 +222,7 @@
             loadingText.style.display = "block";
             
             try {
-                const response = await fetch("/api/ask", {
+                const response = await fetch(apiUrl("/api/ask"), {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json"
