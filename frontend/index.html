@@ -152,7 +152,7 @@
                     body: formData
                 });
 
-                const data = await response.json();
+                const data = await parseApiResponse(response);
 
                 if (response.ok) {
                     uploadStatus.style.color = "green";
@@ -163,7 +163,7 @@
                 }
             } catch (error) {
                 uploadStatus.style.color = "red";
-                uploadStatus.innerText = "❌ Could not connect to the Backend API.";
+                uploadStatus.innerText = "❌ " + error.message;
                 console.error("Upload error:", error);
             }
         }
@@ -195,7 +195,7 @@
                     body: JSON.stringify({ question: question })
                 });
 
-                const data = await response.json();
+                const data = await parseApiResponse(response);
                 
                 loadingText.style.display = "none";
                 responseBox.innerText = data.answer || "No response received.";
@@ -206,6 +206,16 @@
                 responseBox.innerText = "Error connecting to the server.";
                 console.error("Error:", error);
             }
+        }
+
+        async function parseApiResponse(response) {
+            const contentType = response.headers.get("content-type") || "";
+            if (contentType.includes("application/json")) {
+                return response.json();
+            }
+
+            const text = await response.text();
+            throw new Error(text || `Server returned ${response.status}`);
         }
     </script>
 

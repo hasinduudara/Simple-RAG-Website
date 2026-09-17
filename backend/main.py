@@ -21,7 +21,7 @@ EMBEDDING_MODEL_ID = "BAAI/bge-small-en-v1.5"
 EMBEDDING_API_URL = f"https://router.huggingface.co/hf-inference/models/{EMBEDDING_MODEL_ID}/pipeline/feature-extraction"
 LLM_CHAT_URL = "https://router.huggingface.co/v1/chat/completions"
 
-headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+headers = {"Authorization": f"Bearer {HF_API_KEY}"} if HF_API_KEY else {}
 
 # Initialize FastAPI App
 app = FastAPI(title="Dynamic PDF RAG API")
@@ -35,14 +35,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Qdrant client
-qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 COLLECTION_NAME = "pdf_documents"
 
 
 # Pydantic Model for Question Request Body
 class QueryRequest(BaseModel):
     question: str
+
+
+def require_settings():
+    missing = [
+        name
+        for name, value in {
+            "HF_API_KEY": HF_API_KEY,
+            "QDRANT_URL": QDRANT_URL,
+            "QDRANT_API_KEY": QDRANT_API_KEY,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Missing server configuration: {', '.join(missing)}",
+        )
+
+
+def get_qdrant_client():
+    require_settings()
+    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
 
 # Helper Function: Extract text directly from uploaded PDF bytes
@@ -72,11 +92,13 @@ def chunk_text(text, chunk_size=300, overlap=50):
 
 # Helper Function: Get embedding vector from HuggingFace
 def get_embedding(text):
+    require_settings()
     payload = {"inputs": text, "options": {"wait_for_model": True}}
     try:
         response = requests.post(
             EMBEDDING_API_URL, headers=headers, json=payload, timeout=20
         )
+        response.raise_for_status()
         res_json = response.json()
         if (
             isinstance(res_json, list)
@@ -137,6 +159,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
 
     try:
+        qdrant = get_qdrant_client()
+
         # Read file bytes
         file_bytes = await file.read()
         extracted_text = extract_text_from_pdf_bytes(file_bytes)
@@ -175,6 +199,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             "message": f"PDF '{file.filename}' processed and indexed successfully!",
             "total_chunks": len(points),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Upload Error: {e}")
         raise HTTPException(
@@ -186,6 +212,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 @app.post("/ask")
 def ask_question(request: QueryRequest):
     user_query = request.question
+    qdrant = get_qdrant_client()
 
     # 1. Convert question to vector
     query_vector = get_embedding(user_query)
